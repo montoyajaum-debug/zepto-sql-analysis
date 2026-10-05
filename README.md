@@ -1,94 +1,107 @@
-# Análisis de inventario de Zepto con SQL (PostgreSQL)
+# Inventario de Zepto con SQL: la mitad del catálogo está duplicada
 
-Proyecto de análisis exploratorio, limpieza y respuesta a preguntas de negocio sobre el catálogo de **Zepto**, una plataforma de *quick-commerce* de la India. Todo el trabajo se hace en **PostgreSQL**.
+**PostgreSQL · SQL (CTEs, funciones de ventana, validación de calidad de datos)**
 
-## Objetivo
+## Resumen ejecutivo
 
-Simular el flujo de trabajo de un analista de datos en un e-commerce: cargar un catálogo crudo, validar su calidad, corregir problemas y extraer métricas útiles para decisiones de precios, inventario y surtido.
+**Problema:** un equipo de e-commerce quiere decidir precios, reabastecimiento y surtido a partir del catálogo de Zepto, una plataforma de *quick-commerce* de la India.
 
-## Dataset
+**Hallazgo principal:** las 3.731 filas del catálogo corresponden a solo **1.800 productos únicos**. El 71 % de los productos aparece en 2 a 7 categorías y **4 grupos de categorías tienen exactamente el mismo catálogo**. Sumar por fila **infla el ingreso potencial un 112 %** (₹2,24 M en lugar de ₹1,06 M).
 
-- Archivo: [`data/zepto_v2.csv`](data/zepto_v2.csv)
-- 3.732 filas (SKUs) × 9 columnas, 14 categorías.
-- Precios originales en *paise* (1 rupia = 100 paise).
+**Recomendación:** corregir la taxonomía de categorías en la fuente antes de reportar por categoría, y priorizar el reabastecimiento de **Biscuits**, con 28,6 % de productos agotados frente al 12,1 % del promedio.
 
-| Columna | Descripción |
+![Resumen visual de hallazgos](images/hallazgos.png)
+
+## Contexto
+
+El proyecto parte del dataset y las 8 preguntas de negocio de un proyecto guiado muy difundido ([Amlan Mohanty](https://github.com/amlanmohanty1/zepto-SQL-data-analysis-project)). Al reproducirlo, los resultados por categoría mostraron valores idénticos entre categorías distintas, así que antes de responder las preguntas se investigó la calidad del dato.
+
+**Aportes propios frente al proyecto original:**
+- Diagnóstico de duplicados y detección de categorías con catálogos idénticos (sección 3 del script).
+- Tabla de productos únicos y vista de asignación proporcional por categoría, para no contar dos veces el mismo inventario.
+- Las 8 preguntas recalculadas sobre productos únicos, sin `DISTINCT` para ocultar duplicados.
+- Cuatro consultas avanzadas con CTEs y funciones de ventana (`RANK`, `NTILE`, `SUM() OVER()`).
+- Validación de consistencia entre precio, descuento y precio final.
+
+## Datos
+
+| Aspecto | Detalle |
 |---|---|
-| `category` | Categoría del producto |
-| `name` | Nombre del producto |
-| `mrp` | Precio máximo de venta (Maximum Retail Price) |
-| `discountPercent` | Porcentaje de descuento |
-| `availableQuantity` | Unidades disponibles en inventario |
-| `discountedSellingPrice` | Precio final con descuento |
-| `weightInGms` | Peso en gramos |
-| `outOfStock` | `TRUE` si está agotado |
-| `quantity` | Cantidad o tamaño del empaque |
+| Fuente | `data/zepto_v2.csv`, catálogo de Zepto publicado en Kaggle (obtenido por *scraping* de la web de Zepto, según el proyecto original) |
+| Tamaño | 3.732 filas × 9 columnas, 14 categorías |
+| Granularidad real | Una fila por producto **y categoría** (no por producto) |
+| Precios | En *paise* (1 rupia = 100 paise); se convierten a rupias |
+| Calidad | 0 nulos · 1 registro con precio 0 (eliminado) · 1.931 filas duplicadas entre categorías · 10,4 % de productos con precio final inconsistente |
+
+## Enfoque
+
+1. **Exploración:** conteos, nulos, categorías.
+2. **Diagnóstico de duplicados:** filas frente a productos únicos, presencia de cada producto por categoría y detección de categorías idénticas mediante una firma (hash) de su lista de productos.
+3. **Limpieza:** eliminación del precio 0, conversión a rupias, tabla `zepto_productos` (1 fila por producto) y vista `zepto_por_categoria`, que asigna a cada aparición un peso de 1/n categorías.
+4. **Preguntas de negocio P1–P8** sobre productos únicos.
+5. **Consultas avanzadas A1–A4.**
+
+## Hallazgos
+
+1. **El catálogo real tiene 1.800 productos, no 3.731.** El 71,2 % de los productos aparece en más de una categoría (hasta en 7).
+2. **14 categorías, pero solo 9 catálogos distintos.** Cooking Essentials = Munchies (514 productos); Chocolates & Candies = Ice Cream & Desserts = Packaged Food (388); Paan Corner = Personal Care (343); Beverages = Dairy, Bread & Batter (129). Cualquier ranking por categoría repite el mismo resultado para estas categorías.
+3. **Ingreso potencial real: ₹1.058.454.** Sumar las filas del catálogo da ₹2.243.081, un 112 % más.
+4. **El 12,1 % de los productos está agotado** (217 de 1.800). Biscuits, una categoría sin productos compartidos, llega al **28,6 %**, más del doble del promedio; Fruits & Vegetables está en 4,2 %.
+5. **Los productos más caros tienen más descuento:** el quintil de precio más bajo (₹10–49) promedia 6,0 % de descuento y el más alto (₹225–2.600), **10,3 %**.
+6. **Fruits & Vegetables tiene el mayor descuento promedio (15,5 %)**, seguida de Meats, Fish & Eggs (11,0 %). Fruits & Vegetables solo comparte 4 de sus 93 productos con otras categorías, así que su resultado sí es confiable.
+7. **El 10,4 % de los productos (187)** tiene un precio final que no coincide con MRP × (1 − % descuento) por más de ₹1. Lo más probable es que el porcentaje de descuento venga redondeado, así que conviene usarlo como dato aproximado.
+
+## Recomendaciones
+
+| Recomendación | Basada en | Prioridad |
+|---|---|---|
+| Corregir la asignación de categorías en la fuente y reportar por categoría solo después | Hallazgos 1 y 2 | Alta |
+| Calcular inventario e ingreso sobre productos únicos, nunca sumando filas del catálogo | Hallazgo 3 | Alta |
+| Priorizar el reabastecimiento de Biscuits y revisar su proceso de pedidos | Hallazgo 4 | Alta |
+| Revisar el margen en productos de precio alto, que concentran los descuentos mayores | Hallazgo 5 | Media |
+| Calcular el descuento a partir de MRP y precio final, en lugar de usar el porcentaje reportado | Hallazgo 7 | Baja |
+
+## Consultas avanzadas
+
+| # | Pregunta | Técnica |
+|---|---|---|
+| A1 | Top 3 productos por ingreso potencial en cada categoría | CTE + `RANK() OVER (PARTITION BY …)` |
+| A2 | Tasa de agotados por categoría y su posición | CTE + asignación proporcional + `RANK()` |
+| A3 | ¿Los productos caros tienen más descuento? | `NTILE(5)` por precio |
+| A4 | Precios finales inconsistentes | Regla de validación |
+| P3b | Participación de cada categoría en el ingreso | `SUM() OVER ()` |
+| 3.4 | Categorías con catálogo idéntico | `STRING_AGG … ORDER BY` + `MD5` |
+
+## Limitaciones
+
+- El "ingreso potencial" es precio con descuento × stock disponible: es un indicador de inventario valorizado, no de ventas.
+- La asignación proporcional reparte un producto en partes iguales entre sus categorías. Es una convención para no duplicar el total, no la categoría "real" del producto, que el dataset no permite conocer.
+- Un producto se considera único por la combinación de nombre, precios, descuento, peso, stock y presentación. Dos presentaciones distintas del mismo producto cuentan como productos diferentes.
+- Es un catálogo en un solo momento: no permite medir tendencias ni rotación.
 
 ## Estructura del repositorio
 
 ```
 zepto-sql-analysis/
-├── data/
-│   └── zepto_v2.csv
-├── sql/
-│   └── zepto_analysis.sql
+├── data/zepto_v2.csv
+├── sql/zepto_analysis.sql      # carga, diagnóstico, limpieza, P1–P8 y A1–A4
+├── images/hallazgos.png
 └── README.md
 ```
 
-## Cómo ejecutarlo
+## Cómo reproducir
 
-1. Clonar el repositorio:
+1. Clona el repositorio:
    ```bash
    git clone https://github.com/montoyajaum-debug/zepto-sql-analysis.git
    cd zepto-sql-analysis
    ```
-2. Ejecutar el script con `psql` desde la raíz del repo (crea la tabla, carga el CSV y corre todas las consultas):
+2. Ejecuta el script con `psql` desde la raíz del repo. Crea las tablas, carga el CSV y corre todas las consultas:
    ```bash
    psql -U postgres -d tu_base -f sql/zepto_analysis.sql
    ```
-   Si usas **pgAdmin**, crea la tabla con el bloque 0 del script e importa el CSV con *Import/Export Data* (CSV, Header = Yes, UTF8, sin la columna `sku_id`).
-
-## Flujo del análisis
-
-**1. Exploración**
-- Conteo de filas y muestra de datos.
-- Detección de valores nulos.
-- Categorías existentes, productos en stock vs. agotados y nombres repetidos en varios SKUs.
-
-**2. Limpieza**
-- Eliminación de registros con precio = 0.
-- Conversión de precios de *paise* a rupias.
-
-**3. Preguntas de negocio**
-
-| # | Pregunta | Técnica SQL |
-|---|---|---|
-| P1 | Top 10 productos con mayor descuento | `ORDER BY` + `LIMIT` |
-| P2 | Productos caros (MRP > ₹300) agotados | Filtros con `WHERE` |
-| P3 | Ingreso potencial por categoría | `SUM` + `GROUP BY` |
-| P4 | Productos con MRP > ₹500 y descuento < 10% | Filtros compuestos |
-| P5 | Top 5 categorías con mayor descuento promedio | `AVG` + `ROUND` |
-| P6 | Precio por gramo (≥ 100 g) | Métrica calculada |
-| P7 | Segmentación por peso: Low / Medium / Bulk | `CASE WHEN` |
-| P8 | Peso total del inventario por categoría | Agregación ponderada |
-
-## Hallazgos principales
-
-- **453 de 3.731 SKUs (≈12%) están agotados**, lo que representa ventas potenciales perdidas.
-- **Fruits & Vegetables** tiene el descuento promedio más alto (≈15,5%), seguida de **Meats, Fish & Eggs** (≈11%).
-- **Cooking Essentials** y **Munchies** concentran el mayor ingreso potencial en inventario (≈₹337 mil cada una).
-- Se encontró **1 registro con precio 0**, que se eliminó.
-
-## Limitaciones del dataset
-
-- Varias categorías tienen exactamente el mismo número de filas e ingreso (p. ej. Cooking Essentials y Munchies), lo que sugiere productos duplicados entre categorías en la fuente original. Conviene tenerlo en cuenta antes de sacar conclusiones por categoría.
-- El “ingreso estimado” es un ingreso **potencial** (precio × stock disponible), no ventas reales.
-
-## Herramientas
-
-PostgreSQL 16 · pgAdmin · SQL (DDL, DML, agregaciones, `CASE`, filtros)
+   En **pgAdmin**: ejecuta el bloque 0, importa el CSV con *Import/Export Data* (CSV, Header = Yes, UTF8, sin la columna `sku_id`) y luego el resto del script.
 
 ## Autor
 
-**Jhon Alexander Urrea Montoya** — Especialista en Analítica de Datos
-[LinkedIn](https://www.linkedin.com/in/jhon-urrea-data) · [GitHub](https://github.com/montoyajaum-debug)
+**Jhon Alexander Urrea Montoya** · [LinkedIn](https://www.linkedin.com/in/jhon-urrea-data) · [GitHub](https://github.com/montoyajaum-debug)
